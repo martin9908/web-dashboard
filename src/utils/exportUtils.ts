@@ -39,8 +39,15 @@ export async function downloadCsvFile(csvContent: string[][], filename: string, 
       throw new Error('No data to export');
     }
 
+    // Proper CSV escaping: quote any cell containing a comma, quote, or newline
+    // (peso amounts like "5,200.00" contain commas — without this the horizontal
+    // reading columns would split apart).
+    const escapeCell = (cell: any): string => {
+      const s = cell == null ? '' : String(cell);
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
     const csvString = csvContent.map(row =>
-      Array.isArray(row) ? row.join(',') : String(row)
+      Array.isArray(row) ? row.map(escapeCell).join(',') : escapeCell(row)
     ).join('\n');
 
     const finalFilename = `${options.trainingMode ? '[TRAINING MODE] ' : ''}${filename}.csv`;
@@ -154,6 +161,45 @@ function getCurrentUserUid(): string | null {
   }
 }
 
+/**
+ * Turn one or more receipt-style reading texts into a HORIZONTAL table:
+ * a single header row of field labels + one data row per reading (same layout
+ * as the Detailed Sales Summary). Each "Label: value" / "Label   value" line
+ * becomes a column; dividers, blanks and value-less section titles are skipped.
+ * Repeated labels within one reading are disambiguated (e.g. "VAT Amount (2)").
+ */
+function readingTextsToHorizontal(texts: string[]): string[][] {
+  const headerOrder: string[] = [];
+  const seen = new Set<string>();
+  const rows: Record<string, string>[] = [];
+
+  for (const text of texts) {
+    if (!text) continue;
+    const row: Record<string, string> = {};
+    const counts: Record<string, number> = {};
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.replace(/\r/g, '');
+      // Label and value are separated by 2+ spaces in the receipt layout.
+      const m = line.match(/^(.*?\S)\s{2,}(\S.*)$/);
+      if (!m) continue;
+      const label = m[1].replace(/:\s*$/, '').trim();
+      const value = m[2].trim();
+      if (!label) continue;
+      counts[label] = (counts[label] || 0) + 1;
+      const key = counts[label] > 1 ? `${label} (${counts[label]})` : label;
+      row[key] = value;
+      if (!seen.has(key)) {
+        seen.add(key);
+        headerOrder.push(key);
+      }
+    }
+    if (Object.keys(row).length) rows.push(row);
+  }
+
+  if (!headerOrder.length) return [];
+  return [headerOrder, ...rows.map((r) => headerOrder.map((h) => r[h] ?? ''))];
+}
+
 // Generate Z Reading CSV from Firebase pre-calculated readings
 export async function generateZCsv(startDate: string, endDate?: string): Promise<string[][]> {
   const userUid = getCurrentUserUid();
@@ -169,18 +215,16 @@ export async function generateZCsv(startDate: string, endDate?: string): Promise
     const journalQuery = query(journalRef, orderByKey(), startAt(sttS), endAt(endS));
     const snapshot = await get(journalQuery);
 
-    let zText = '';
+    const zTexts: string[] = [];
     if (snapshot.exists()) {
       snapshot.forEach((child) => {
         const val = child.val();
-        if (val?.zReading) zText += val.zReading;
+        if (val?.zReading) zTexts.push(val.zReading);
       });
     }
 
-    if (zText.trim()) {
-      const lines = zText.split('\n').filter((l: string) => l.trim());
-      return lines.map((line: string) => [line]);
-    }
+    const horizontal = readingTextsToHorizontal(zTexts);
+    if (horizontal.length) return horizontal;
   } catch (firebaseError) {
     console.warn('Error fetching Z reading from Firebase:', firebaseError);
   }
@@ -209,18 +253,16 @@ export async function generateXCsv(startDate: string, endDate?: string): Promise
     const journalQuery = query(journalRef, orderByKey(), startAt(sttS), endAt(endS));
     const snapshot = await get(journalQuery);
 
-    let xText = '';
+    const xTexts: string[] = [];
     if (snapshot.exists()) {
       snapshot.forEach((child) => {
         const val = child.val();
-        if (val?.xReading) xText += val.xReading;
+        if (val?.xReading) xTexts.push(val.xReading);
       });
     }
 
-    if (xText.trim()) {
-      const lines = xText.split('\n').filter((l: string) => l.trim());
-      return lines.map((line: string) => [line]);
-    }
+    const horizontal = readingTextsToHorizontal(xTexts);
+    if (horizontal.length) return horizontal;
   } catch (firebaseError) {
     console.warn('Error fetching X reading from Firebase:', firebaseError);
   }

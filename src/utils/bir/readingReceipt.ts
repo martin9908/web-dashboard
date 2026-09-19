@@ -335,6 +335,11 @@ export function renderReading(
     const totalPaymentsSeparator = '='.repeat(44);
 
     if (cashier) out += sa('Cashier:') + ss(cashier);
+    // Mirrors the device: an X names the cashiers whose sales fall in its window.
+    if (type === 'X' && Array.isArray(txnSummary)) {
+      const onShift = [...new Set(txnSummary.map((t: any) => (t?.cashier || '').trim()).filter(Boolean))];
+      if (onShift.length) out += sa('Shift Cashier(s):') + ss(onShift.join(', '));
+    }
     if (posTerminalNumber) out += sa('POS Terminal #:') + ss(posTerminalNumber);
     out += sa(`Beg. ${bir.receiptType} #:`) + ss(padReceiptNo(beginningCICycle, beginningCI));
     out += sa(`End. ${bir.receiptType} #:`) + ss(padReceiptNo(endingCICycle, endingCI));

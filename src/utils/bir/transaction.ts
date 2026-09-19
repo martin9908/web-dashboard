@@ -61,6 +61,8 @@ interface TransactionSummaryItem {
   receiptNo: number | string | null;
   receiptCycle: number | string | null;
   txnNo: number | string;
+  /** Who rang it; the X-Reading lists the cashiers in its window. */
+  cashier: string;
   manualReference: string;
   vatableSales: number;
   vatAmount: number;
@@ -533,6 +535,7 @@ export const getTransactionSummary = (snapshot: any): TransactionSummaryItem[] =
       receiptNo,
       receiptCycle,
       txnNo,
+      cashier: value.cashier || '',
       // Manual SI/OR reference (set when a manual receipt was issued while the POS
       // was down) — used by Sales Summary's "Sales Issued w/ Manual SI/OR" column.
       manualReference: value.manualReference || '',

@@ -295,14 +295,13 @@ export function renderReading(
   out += sa('Report Time:') + ss(reportTimeStr);
   out += '\n';
 
-  const shift = (cashDeclaration as any)?.shift;
   const startDateTime = typeof sttS === 'number'
-    ? Moment.unix(sttS).format('MM/DD/YYYY HH:mm:ss') + (shift ? ` (${shift.name})` : '')
+    ? Moment.unix(sttS).format('MM/DD/YYYY HH:mm:ss')
     : dateRange
       ? `${dateRange.start} 00:00:00`
       : `${Moment().startOf('day').format('MM/DD/YYYY')} 00:00:00`;
   const endDateTime = typeof endS === 'number'
-    ? Moment.unix(endS).format('MM/DD/YYYY HH:mm:ss') + (shift ? ` (${shift.name})` : '')
+    ? Moment.unix(endS).format('MM/DD/YYYY HH:mm:ss')
     : Moment().format('MM/DD/YYYY HH:mm:ss');
 
   out += sa('Start Date & Time:') + ss(startDateTime);

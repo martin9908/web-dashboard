@@ -269,6 +269,20 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
     const names = $txn.original?.seniorAndPwdMetadata?.names?.split(/\n+/) || [];
     const ids = $txn.original?.seniorAndPwdMetadata?.ids?.split(/\n+/) || [];
     const tins = $txn.original?.seniorAndPwdMetadata?.tins?.split(/\n+/) || [];
+    // Which discount each named person carries, one entry per name, written by
+    // the Register alongside the names (pax blocks and item-level discounts).
+    // Absent on older records, in which case a name is assumed to belong to
+    // every discount type the transaction has, as before.
+    const NON_PAX_TYPE_KEY: Record<string, string> = {
+      senior: 'senior', sc: 'senior',
+      pwd: 'pwd',
+      ntl: 'ntlAthlete', ntlAthlete: 'ntlAthlete', naac: 'ntlAthlete',
+      sp: 'soloParent', soloParent: 'soloParent',
+      diplomat: 'diplomat',
+      mov: 'medalOfValor', medalOfValor: 'medalOfValor',
+    };
+    const discTypes: string[] = ($txn.original?.seniorAndPwdMetadata?.discTypes?.split(/\n+/) || [])
+      .map((t: string) => NON_PAX_TYPE_KEY[(t || '').trim()] || '');
 
     // PAX discount: stored on first item, not on transaction root
     const paxDiscount = (() => {
@@ -533,13 +547,30 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
     } else {
       // Non-PAX: use seniorAndPwdMetadata names for discounts (both item-level and transaction-level)
       // Check discount amounts directly (discs.X > 0) since discounts can be at item or transaction level
+      // A named person prints under their own discount type only. A name with
+      // no recorded type (older records) prints under every type present, as
+      // it always did.
+      const rowIsType = (n: number, type: string) => !discTypes[n] || discTypes[n] === type;
+      // One transaction's figures for a type are shared out over the people
+      // who print under it, so two named seniors on one sale carry half each
+      // and the sheet total still equals the sale — same rule as the pax rows.
+      const rowsUnder = (type: string) =>
+        names.filter((nm: string, i: number) => nm && rowIsType(i, type)).length || 1;
+      const aggFor = (type: string) => {
+        const src = nonPaxTypeAgg[type];
+        const share = rowsUnder(type);
+        const out: Record<string, number> = {};
+        for (const [k, v] of Object.entries(src)) out[k] = (v as number) / share;
+        return out;
+      };
+
       for (let n = 0; n < names.length; n++) {
         const name = names[n];
         if (!name) continue;
 
         // Senior discount - check actual discount amount instead of txnDiscType
-        if (discsGross.senior > 0) {
-          const agg = nonPaxTypeAgg.senior;
+        if (discsGross.senior > 0 && rowIsType(n, 'senior')) {
+          const agg = aggFor('senior');
           if (agg.discount <= 0) continue;
           if (!seniorData[name]) seniorData[name] = [];
           seniorData[name].push({
@@ -558,8 +589,8 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
         }
 
         // PWD discount
-        if (discsGross.pwd > 0) {
-          const agg = nonPaxTypeAgg.pwd;
+        if (discsGross.pwd > 0 && rowIsType(n, 'pwd')) {
+          const agg = aggFor('pwd');
           if (agg.discount <= 0) continue;
           if (!pwdData[name]) pwdData[name] = [];
           pwdData[name].push({
@@ -577,8 +608,8 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
         }
 
         // Medal of Valor discount
-        if (discsGross.medalOfValor > 0) {
-          const agg = nonPaxTypeAgg.medalOfValor;
+        if (discsGross.medalOfValor > 0 && rowIsType(n, 'medalOfValor')) {
+          const agg = aggFor('medalOfValor');
           if (agg.discount <= 0) continue;
           if (!medalOfValorData[name]) medalOfValorData[name] = [];
           medalOfValorData[name].push({
@@ -596,8 +627,8 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
         }
 
         // NAAC discount — VATable, keeps VAT in net
-        if (discsGross.ntlAthlete > 0) {
-          const agg = nonPaxTypeAgg.ntlAthlete;
+        if (discsGross.ntlAthlete > 0 && rowIsType(n, 'ntlAthlete')) {
+          const agg = aggFor('ntlAthlete');
           if (agg.discount <= 0) continue;
           if (!ntlAthleteData[name]) ntlAthleteData[name] = [];
           const vr = VAT_RATE;
@@ -616,8 +647,8 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
         }
 
         // Solo Parent discount — VAT-exempt 10%
-        if (discsGross.soloParent > 0) {
-          const agg = nonPaxTypeAgg.soloParent;
+        if (discsGross.soloParent > 0 && rowIsType(n, 'soloParent')) {
+          const agg = aggFor('soloParent');
           if (agg.discount <= 0) continue;
           if (!soloParentData[name]) soloParentData[name] = [];
           const soloMeta = $txn.original?.soloParentMetadata || $txn.original?.soloParentDetails;
@@ -638,8 +669,8 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
         }
 
         // Diplomat discount (zero-rated)
-        if (discsGross.diplomat > 0 || vtsGross.zeroVat > 0) {
-          const agg = nonPaxTypeAgg.diplomat;
+        if ((discsGross.diplomat > 0 || vtsGross.zeroVat > 0) && rowIsType(n, 'diplomat')) {
+          const agg = aggFor('diplomat');
           if (agg.grossSales <= 0 && agg.vatExcluded <= 0) continue;
           if (!diplomatData[name]) diplomatData[name] = [];
           diplomatData[name].push({

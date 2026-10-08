@@ -1,5 +1,6 @@
 import Moment from 'moment-timezone';
 import Transaction from '../../models/Transaction';
+import { bnpcLineRate } from './bnpc';
 
 const MP = Transaction.MONEY_PRECISION;
 
@@ -283,6 +284,43 @@ export const getTransactionSummary = (snapshot: any): TransactionSummaryItem[] =
               }
             }
           }
+        }
+        continue;
+      }
+
+      // SC/PWD/MOV on a basic necessity (bnpc.ts): 5% of the regular price, VAT
+      // kept. Booked exactly like a regular discount (same bucket, deduction and
+      // VAT-adjustment formulas as the 'regular' branches below) but under the
+      // buyer's SC/PWD/MOV category. Mirrors the device (utakretailBIR b3996b17).
+      const bnpcType = bnpcLineRate(item, itemDiscType) != null ? itemDiscType : txnDiscType;
+      const bnpcRate = bnpcLineRate(item, bnpcType);
+      if (bnpcRate != null) {
+        const cat = bnpcType === 'senior' ? 'sc' : bnpcType === 'pwd' ? 'pwd' : 'medalOfValor';
+        const bnpcBucket = applySalesBucket({
+          discountType: 'regular',
+          baseAmount,
+          regularRate: bnpcRate,
+          defaultVatType: vatType,
+        });
+        vatableSales += bnpcBucket.vatable;
+        vatAmount += bnpcBucket.vat;
+        vatExemptSales += bnpcBucket.exempt;
+        zeroRatedSales += bnpcBucket.zeroRated;
+        (deductions.discount as any)[cat] += baseAmount * bnpcRate;
+        if (vatType === 'vatable') {
+          (adjustmentOnVat.discount as any)[cat] += baseAmount * VAT_RATE * bnpcRate;
+        }
+        if (returned) {
+          deductions.returns += baseAmount - baseAmount * bnpcRate;
+          if (vatType === 'vatable') {
+            adjustmentOnVat.returns += baseAmount * VAT_RATE - baseAmount * VAT_RATE * bnpcRate;
+          }
+        }
+        if (refunded) {
+          deductions.returns += baseAmount - baseAmount * bnpcRate;
+        }
+        if (voided && !returned && !refunded) {
+          deductions.voids += baseAmount * (1 - bnpcRate);
         }
         continue;
       }

@@ -10,12 +10,19 @@ import MonthlyTab from './Comps/MonthlyTab';
 import AuditTrailTab from './Comps/AuditTrailTab';
 import ManualTab from './Comps/ManualTransactions';
 import ProductMixTab from './Comps/ProductMixTab';
+import StockTab from './Comps/retail/StockTab';
+import ExchangesTab from './Comps/retail/ExchangesTab';
+import OverridesTab from './Comps/retail/OverridesTab';
+import { useIsRetail } from './hooks/retail';
 
 export default function ReportsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [activeTab, setActiveTab] = useState('daily');
-  
+  // Retail businesses (UTAK Retail app) get three more tabs; F&B accounts on
+  // the same deploy see exactly the tabs they had.
+  const isRetail = useIsRetail() === true;
+
   const tabs = [
     { id: 'daily', label: 'Daily Totals', path: 'daily' },
     { id: 'transactions', label: 'Transactions', path: 'transactions' },
@@ -27,6 +34,13 @@ export default function ReportsPage() {
     { id: 'productmix', label: 'Product Mix', path: 'productmix' },
     { id: 'monthly', label: 'Monthly', path: 'monthly' },
     { id: 'audit', label: 'Audit Trail', path: 'audit' },
+    ...(isRetail
+      ? [
+          { id: 'stock', label: 'Stock', path: 'stock' },
+          { id: 'exchanges', label: 'Exchanges', path: 'exchanges' },
+          { id: 'overrides', label: 'Price Overrides', path: 'overrides' },
+        ]
+      : []),
   ];
 
   // Update active tab based on current URL
@@ -72,6 +86,9 @@ export default function ReportsPage() {
           <Route path="productmix" element={<ProductMixTab />} />
           <Route path="monthly" element={<MonthlyTab />} />
           <Route path="audit" element={<AuditTrailTab />} />
+          {isRetail && <Route path="stock" element={<StockTab />} />}
+          {isRetail && <Route path="exchanges" element={<ExchangesTab />} />}
+          {isRetail && <Route path="overrides" element={<OverridesTab />} />}
           <Route index element={<DailyTab />} />
         </Routes>
       </div>

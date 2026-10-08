@@ -21,10 +21,22 @@ import Transaction from '../../models/Transaction';
 import TransactionItem from '../../models/TransactionItem';
 import { getTransactionSummary } from './transaction';
 import { getRefundSummary, getReturnSummary, getVoidSummary } from './refund';
+import { bnpcLineRate } from './bnpc';
 
 const VAT_RATE = 0.12;
 
 const MP = Transaction.MONEY_PRECISION;
+
+// A basic-necessity SC/PWD/MOV line (bnpc.ts) carries a VAT-inclusive discount
+// from the model; these rows work on the VAT-exclusive base, so the discount is
+// brought to that base first (the same figure the readings book). Every other
+// line is unchanged. Mirrors the device (utakretailBIR b3996b17).
+const isBnpcLine = ($itm: any, discType?: string) =>
+  discType
+    ? bnpcLineRate($itm?.original, discType) != null
+    : bnpcLineRate($itm?.original, $itm?.itmDiscType) != null ||
+      bnpcLineRate($itm?.original, $itm?.txnDiscType) != null;
+const toVatBase = ($itm: any, amount: number) => ($itm?.vatType === 'vatable' ? amount / 1.12 : amount);
 
 type Opts = {
   snapshot: any;
@@ -313,7 +325,7 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
       const qtyPrice = ($itm.quantity || 0) * ($itm.price || 0);
       const lineGross = $itm.vatType === 'vatable' ? qtyPrice / (1 + VAT_RATE) : qtyPrice;
       const discAmt = ($itm.itmDiscount || 0) + ($itm.txnDiscount || 0);
-      totalGrossAfterDisc += lineGross - discAmt;
+      totalGrossAfterDisc += lineGross - (isBnpcLine($itm) ? toVatBase($itm, discAmt) : discAmt);
     }
     const svcRate = ($txn.original?.service || $txn.svcRate || 0) / (typeof ($txn.original?.service) === 'number' && ($txn.original?.service) > 1 ? 100 : 1);
     const totalServiceFee = totalGrossAfterDisc * svcRate;
@@ -341,7 +353,9 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
         // Ensure lineGross is always VAT-exclusive base (not VAT-inclusive price)
         const qtyPrice = ($itm.quantity || 0) * ($itm.price || 0);
         const lineGross = $itm.vatType === 'vatable' ? qtyPrice / (1 + VAT_RATE) : qtyPrice;
-        const lineGrossAfterDisc = lineGross - discAmt;
+        const bnpc = isBnpcLine($itm, discType);
+        const discBase = bnpc ? toVatBase($itm, discAmt) : discAmt;
+        const lineGrossAfterDisc = lineGross - discBase;
         // Allocate service fee proportionally based on post-discount gross
         const allocatedServiceFee = totalGrossAfterDisc > 0 ? (lineGrossAfterDisc / totalGrossAfterDisc) * totalServiceFee : 0;
         // Net Sales = Gross - Discount + Allocated Service Fee
@@ -351,7 +365,7 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
         if (discType === 'diplomat' && lineGross <= 0 && discAmt <= 0) continue;
 
         const agg = nonPaxTypeAgg[discType];
-        agg.discount += discAmt;
+        agg.discount += discBase;
         agg.netSales += lineNet;
         agg.grossSales += lineGross;
         agg.grossAfterDisc += lineGrossAfterDisc;
@@ -365,7 +379,7 @@ export async function specialDiscounts({ snapshot, month, refundsSnapshot, retur
           const vatExcluded = $itm.vatExemption || ($itm.vatType === 'zeroVat' ? (lineGross / 1.12) * 0.12 : 0);
           agg.vatExcluded += vatExcluded;
         } else {
-          const vatable = (lineGross - discAmt) / 1.12;
+          const vatable = bnpc ? lineGrossAfterDisc : (lineGross - discAmt) / 1.12;
           agg.vatable += vatable;
           agg.vat += vatable * 0.12;
         }

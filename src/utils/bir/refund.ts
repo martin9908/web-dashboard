@@ -1,4 +1,5 @@
 import Moment from 'moment-timezone';
+import { bnpcLineRate } from './bnpc';
 
 import { roundMoney } from './money';
 
@@ -205,7 +206,21 @@ export const getRefundSummary = (snapshot: any): RefundSummaryResult => {
       }
 
       const discountType = resolveDiscountType(item);
-      if (discountType === 'ntlAthlete') {
+      // SC/PWD/MOV on a basic necessity (bnpc.ts): refunded like a regular
+      // discount (VATable on the discounted price), at the line's own rate.
+      // Mirrors the device (utakretailBIR b3996b17).
+      const bnpcRate = bnpcLineRate(item, discountType);
+      if (bnpcRate != null && (vatType === 'vatable' || !vatType)) {
+        const discountedPrice = totalPrice * (1 - bnpcRate);
+        vatableSales += discountedPrice / (1 + VAT_RATE);
+        const itemVat = discountedPrice - discountedPrice / (1 + VAT_RATE);
+        vatAmount += itemVat;
+        salesAdjVatAmount += itemVat;
+      } else if (bnpcRate != null && vatType === 'vatExempt') {
+        vatExemptSales += totalPrice;
+      } else if (bnpcRate != null && vatType === 'zeroVat') {
+        zeroRatedSales += totalPrice / 1.12;
+      } else if (discountType === 'ntlAthlete') {
         const naacBase = totalPrice / (1 + VAT_RATE);
         const naacDiscountedBase = naacBase * (1 - NAAC_RATE);
         vatableSales += naacDiscountedBase;
@@ -389,6 +404,8 @@ interface ReturnSummaryItem {
   originalTransactionKey: string;
   returnNo: number;
   returnAmount: number;
+  /** Retail exchange: goods came back, no money left the drawer. */
+  isExchange?: boolean;
   receiptNo: string | number;
   receiptCycle: number;
   vatableSales: number;
@@ -548,6 +565,26 @@ export const getReturnSummary = (snapshot: any): ReturnSummaryResult => {
       const signedTotalPrice = (item.price || 0) * (item.quantity || 0);
       const signedBase = signedTotalPrice / (1 + VAT_RATE);
 
+      // SC/PWD/MOV on a basic necessity (bnpc.ts): returned like a regular
+      // discount (VATable on the discounted base), at the line's own rate, and
+      // kept out of the SC/PWD/MOV VAT-exempt return figures. Mirrors the device.
+      const bnpcRate = bnpcLineRate(item, discountType);
+      if (bnpcRate != null) {
+        if (vatType === 'vatable') {
+          const discountedBase = signedBase * (1 - bnpcRate);
+          vatableSales += discountedBase;
+          vatAmount += discountedBase * VAT_RATE;
+          if (bnpcRate > 0) {
+            regDiscReturnVat += Math.abs(discountedBase) * VAT_RATE;
+          }
+        } else if (vatType === 'vatExempt') {
+          vatExemptSales += signedTotalPrice;
+        } else if (vatType === 'zeroVAT') {
+          zeroRatedSales += signedTotalPrice / (1 + VAT_RATE);
+        }
+        continue;
+      }
+
       if (
         vatType === 'vatable' &&
         !['senior', 'pwd', 'soloParent', 'medalOfValor', 'diplomat'].includes(discountType)
@@ -621,6 +658,9 @@ export const getReturnSummary = (snapshot: any): ReturnSummaryResult => {
       regDiscReturnVat,
       zeroRatedReturnBase,
       paymentType,
+      // Retail exchange (utakretailBIR): the credit paid for the replacement
+      // sale, so no money left the drawer. Kept out of the cash returns below.
+      isExchange: !!value.isExchange,
     });
   });
 
@@ -645,10 +685,10 @@ export const getReturnSummary = (snapshot: any): ReturnSummaryResult => {
   const vatOnReturns = data.reduce((s, r) => s + (r.vatAmount || 0), 0);
   const returnBaseAmount = data.reduce((sum, r) => sum + r.vatableSales + r.vatExemptSales + r.zeroRatedSales, 0);
   const cashReturnAmount = data
-    .filter((r) => r.paymentType === 'Cash')
+    .filter((r) => r.paymentType === 'Cash' && !r.isExchange)
     .reduce((sum, r) => sum + (r.returnAmount || 0), 0);
   const cashReturnNetAmount = data
-    .filter((r) => r.paymentType === 'Cash')
+    .filter((r) => r.paymentType === 'Cash' && !r.isExchange)
     .reduce((sum, r) => {
       const base = Math.abs((r.vatableSales || 0) + (r.vatExemptSales || 0) + (r.zeroRatedSales || 0));
       return (
@@ -807,7 +847,20 @@ export const getVoidSummary = (voidsSnapshot: any): VoidSummaryResult => {
           }
 
           const discountType = resolveDiscountType(item);
-          if (
+          // SC/PWD/MOV on a basic necessity (bnpc.ts): voided like a regular
+          // discount, at the line's own rate. Mirrors the device.
+          const bnpcRate = bnpcLineRate(item, discountType);
+          if (bnpcRate != null && vatType === 'vatable') {
+            const discountedBase = base * (1 - bnpcRate);
+            voidBase += discountedBase;
+            voidVat += discountedBase * VAT_RATE;
+          } else if (bnpcRate != null && vatType === 'vatExempt') {
+            voidBase += totalPrice;
+          } else if (bnpcRate != null && vatType === 'zeroVAT') {
+            voidBase += base;
+          } else if (bnpcRate != null) {
+            // Unknown VAT type: same as a regular discount here (nothing booked).
+          } else if (
             vatType === 'vatable' &&
             !['senior', 'pwd', 'soloParent', 'medalOfValor', 'ntlAthlete', 'diplomat'].includes(
               discountType,

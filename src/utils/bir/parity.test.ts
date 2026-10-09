@@ -28,6 +28,11 @@ const MOBILE_REFUND = path.join(MOBILE_ROOT, 'src/HelperFunctions/refund.js');
 // Present on the retail POS (utakretailBIR) only: the basic-necessity rules.
 const MOBILE_RETAIL_PRICING = path.join(MOBILE_ROOT, 'src/HelperFunctions/retailPricing.js');
 const isRetailDevice = fs.existsSync(MOBILE_RETAIL_PRICING);
+// Exchanges are a retail feature (not a BIR fix): a device without them emits
+// return rows with no `isExchange` flag, so the flag is left out of that comparison.
+const deviceHasExchange = fs.existsSync(path.join(MOBILE_ROOT, 'src/HelperFunctions/exchange.js'));
+const withoutExchangeFlag = (v: any): any =>
+  deviceHasExchange ? v : JSON.parse(JSON.stringify(v, (k, x) => (k === 'isExchange' ? undefined : x)));
 
 const available = [FIXTURE, MOBILE_READING, MOBILE_TXN, MOBILE_SPECIAL_DISCOUNTS].every(f =>
   fs.existsSync(f),
@@ -294,7 +299,12 @@ describe.skipIf(!available)('web ↔ mobile computation parity', () => {
     const refunds = {
       [T0 + 360]: { originalTransactionKey: String(T0), refundNo: 1, total: 475, paymentType: 'Cash', items: [{ ...sold, refund: T0 + 360 }] },
     };
-    expect(round(getReturnSummary(asSnapshot(returns)))).toEqual(round(mobileRefund.getReturnSummary(asSnapshot(returns))));
+    // A device without exchanges treats an exchange return as a plain cash
+    // return; compare it on the plain return only.
+    const comparable = deviceHasExchange ? returns : { [T0 + 300]: returns[T0 + 300] };
+    expect(withoutExchangeFlag(round(getReturnSummary(asSnapshot(comparable))))).toEqual(
+      withoutExchangeFlag(round(mobileRefund.getReturnSummary(asSnapshot(comparable)))),
+    );
     const web = getReturnSummary(asSnapshot(returns)) as any;
     expect(web.returns.length).toBe(2);
     expect(Math.round(web.cashReturnAmount * 100) / 100, 'exchange return counted as cash').toBe(500);

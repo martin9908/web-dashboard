@@ -502,6 +502,15 @@ export const getTransactionSummary = (snapshot: any): TransactionSummaryItem[] =
         paymentTypeTotals[normalizedType] = (paymentTypeTotals[normalizedType] || 0) + amt;
         splitPaymentTotal += amt;
       }
+
+      // A split records each leg as typed, so an overpaid cash leg still holds the
+      // change. Book only the cash kept (never below 0), for a sale with no later
+      // adjustment. Mirrors the device (utakretailBIR 08d2d6bc).
+      const splitDue = Number.isFinite(paymentTotalForSingleTender) ? paymentTotalForSingleTender : 0;
+      const overpaid = splitPaymentTotal - splitDue;
+      if (!hasAdjustmentMarkers && splitDue > 0 && overpaid > 0.005 && (paymentTypeTotals.Cash || 0) > 0) {
+        paymentTypeTotals.Cash -= Math.min(overpaid, paymentTypeTotals.Cash);
+      }
       // Legacy records with an all-zero payments object: fall back to declared type + total.
       if (splitPaymentTotal <= 0) {
         const type = normalizePaymentType(value.paymentType || 'Cash');

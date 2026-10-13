@@ -30,6 +30,9 @@ const MOBILE_RETAIL_PRICING = path.join(MOBILE_ROOT, 'src/HelperFunctions/retail
 const isRetailDevice = fs.existsSync(MOBILE_RETAIL_PRICING);
 // Exchanges are a retail feature (not a BIR fix): a device without them emits
 // return rows with no `isExchange` flag, so the flag is left out of that comparison.
+// Overpaid split cash fix (utakretailBIR 08d2d6bc; afrakhan123/utakmobileBIR#974).
+const deviceHasSplitCashFix =
+  fs.existsSync(MOBILE_TXN) && fs.readFileSync(MOBILE_TXN, 'utf8').includes('const splitDue');
 const deviceHasExchange = fs.existsSync(path.join(MOBILE_ROOT, 'src/HelperFunctions/exchange.js'));
 const withoutExchangeFlag = (v: any): any =>
   deviceHasExchange ? v : JSON.parse(JSON.stringify(v, (k, x) => (k === 'isExchange' ? undefined : x)));
@@ -309,5 +312,18 @@ describe.skipIf(!available)('web ↔ mobile computation parity', () => {
     expect(web.returns.length).toBe(2);
     expect(Math.round(web.cashReturnAmount * 100) / 100, 'exchange return counted as cash').toBe(500);
     expect(round(getRefundSummary(asSnapshot(refunds)))).toEqual(round(mobileRefund.getRefundSummary(asSnapshot(refunds))));
+  });
+
+  it.skipIf(!available || !deviceHasSplitCashFix)('overpaid split books the cash kept, like the device', () => {
+    const item = { title: 'Tee', price: 650, quantity: 1, _defaultVatType: 'vatable' };
+    const record = {
+      1791000900: { total: 650, paymentType: null, payments: { 'Exchange Credit': 499, Cash: 200 }, items: [{ ...item }] },
+      1791000960: { total: 650, paymentType: null, payments: { GCash: 450, Cash: 200 }, items: [{ ...item }] },
+    };
+    const web = getTransactionSummary(asSnapshot(record)) as any[];
+    const mobile = mobileGetTransactionSummary(asSnapshot(record));
+    expect(round(web)).toEqual(round(mobile));
+    expect(web[0].paymentTypeTotals.Cash).toBeCloseTo(151, 2);
+    expect(web[1].paymentTypeTotals.Cash).toBeCloseTo(200, 2);
   });
 });

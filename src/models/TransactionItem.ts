@@ -202,6 +202,13 @@ class TransactionItem {
       rate = TransactionItem.numberOrZero(_rate) / 100;
     } else if (isCommodityDiscount) {
       rate = defaultRate;
+      // UTAK Retail: the weekly BNPC cap can leave only part of a line
+      // eligible; the line then carries its effective rate (never above the
+      // 5%). F&B lines never set bnpcRate. Mirrors the device model.
+      const bnpcRate = Number((this.original as any).bnpcRate);
+      if ((this.original as any).bnpcRate != null && Number.isFinite(bnpcRate)) {
+        rate = Math.max(0, Math.min(bnpcRate, defaultRate));
+      }
     } else {
       rate = TransactionItem.normalizeSpecialDiscountRate(parsedRate, defaultRate, this.vatRate);
     }
@@ -227,7 +234,7 @@ class TransactionItem {
   }
 
   get $itmDiscount(): number {
-    if (this.itmDiscType === 'regular' || this.itmDiscType === 'promotional') {
+    if (this.__itmDiscGrossBased) {
       if (this.itmDiscRate >= 1) return this.$baseSales;
       return this.$baseSales * this.itmDiscRate;
     }
@@ -235,7 +242,7 @@ class TransactionItem {
   }
 
   get $txnDiscount(): number {
-    if (this.txnDiscType === 'regular' || this.txnDiscType === 'promotional') {
+    if (this.__txnDiscGrossBased) {
       if (this.txnDiscRate >= 1) return this.$baseSales;
       return this.$baseSales * this.txnDiscRate;
     }
@@ -245,8 +252,8 @@ class TransactionItem {
   get $discount(): number {
     const total = this.$itmDiscount + this.$txnDiscount;
     const hasRegular =
-      ((this.itmDiscType === 'regular' || this.itmDiscType === 'promotional') && this.itmDiscRate > 0) ||
-      ((this.txnDiscType === 'regular' || this.txnDiscType === 'promotional') && this.txnDiscRate > 0);
+      (this.__itmDiscGrossBased && this.itmDiscRate > 0) ||
+      (this.__txnDiscGrossBased && this.txnDiscRate > 0);
     if (this.vatType === 'vatable' && hasRegular && (this.itmDiscRate >= 1 || this.txnDiscRate >= 1)) {
       return Math.min(total, this.$baseSales);
     }
@@ -270,8 +277,8 @@ class TransactionItem {
 
   get $netSales(): number {
     const hasRegular =
-      ((this.itmDiscType === 'regular' || this.itmDiscType === 'promotional') && this.itmDiscRate > 0) ||
-      ((this.txnDiscType === 'regular' || this.txnDiscType === 'promotional') && this.txnDiscRate > 0);
+      (this.__itmDiscGrossBased && this.itmDiscRate > 0) ||
+      (this.__txnDiscGrossBased && this.txnDiscRate > 0);
     if (this.vatType === 'vatable' && hasRegular) {
       const cap = this.$baseSales >= 0 ? this.$baseSales : -this.$baseSales;
       const discountToSubtract = Math.min(this.$discount, cap);
@@ -290,8 +297,8 @@ class TransactionItem {
     if (this._parts) return this._parts.vat;
     if (this.vatType !== 'vatable') return 0;
     const hasRegular =
-      ((this.itmDiscType === 'regular' || this.itmDiscType === 'promotional') && this.itmDiscRate > 0) ||
-      ((this.txnDiscType === 'regular' || this.txnDiscType === 'promotional') && this.txnDiscRate > 0);
+      (this.__itmDiscGrossBased && this.itmDiscRate > 0) ||
+      (this.__txnDiscGrossBased && this.txnDiscRate > 0);
     const isNaac = this.itmDiscType === 'ntlAthlete' || this.txnDiscType === 'ntlAthlete';
     if (isNaac) {
       return this.$grossSales * this.vatRate;
@@ -406,7 +413,33 @@ class TransactionItem {
     return TransactionItem.round(((this.quantity * this.price) / (1 + this.vatRate)) * this.vatRate);
   }
 
+  /**
+   * SC/PWD/MOV on a basic necessity / prime commodity: 5% of the regular
+   * retail price, VAT not exempted (DA-DTI-DOE JAO, March 2024). Computed
+   * like a regular discount (on the VAT-inclusive price, VAT kept); the type
+   * stays senior/pwd/medalOfValor so reports file it under SC/PWD/MOV.
+   * Mirrors the device fix (utakretailBIR 0e3d8046, 4d4b5fca): the special
+   * path normalised the 5% back to 20% on the VAT-exclusive base, so a P500
+   * commodity line got P89.29 off instead of P25.00.
+   */
+  get __isCommodityDiscount(): boolean {
+    return this.original.isCommodity === true && ['senior', 'pwd', 'medalOfValor'].includes(this.itmDiscType);
+  }
+
+  get __itmDiscGrossBased(): boolean {
+    return this.itmDiscType === 'regular' || this.itmDiscType === 'promotional' || this.__isCommodityDiscount;
+  }
+
+  get __txnDiscGrossBased(): boolean {
+    return (
+      this.txnDiscType === 'regular' ||
+      this.txnDiscType === 'promotional' ||
+      (this.original.isCommodity === true && ['senior', 'pwd', 'medalOfValor'].includes(this.txnDiscType))
+    );
+  }
+
   get _effectiveItmDiscRate(): number {
+    if (this.__isCommodityDiscount) return this.itmDiscRate;
     const specialTypes = ['senior', 'pwd', 'ntlAthlete', 'diplomat', 'soloParent', 'medalOfValor', 'commodity'];
     if (!specialTypes.includes(this.itmDiscType) || this.defaultVatType !== 'vatable') return this.itmDiscRate;
     const defaultRate = this._opts.specialDiscountRates[this.itmDiscType] ?? 0.2;
@@ -414,7 +447,7 @@ class TransactionItem {
   }
 
   get itmDiscount(): number {
-    if (this.itmDiscType === 'regular' || this.itmDiscType === 'promotional') {
+    if (this.__itmDiscGrossBased) {
       if (this.itmDiscRate >= 1) return TransactionItem.round(this.$baseSales);
       return TransactionItem.round(this.$baseSales * this.itmDiscRate);
     }
@@ -464,6 +497,9 @@ class TransactionItem {
   }
 
   get _effectiveTxnDiscRate(): number {
+    if (this.original.isCommodity === true && ['senior', 'pwd', 'medalOfValor'].includes(this.txnDiscType)) {
+      return this.txnDiscRate;
+    }
     const specialTypes = ['senior', 'pwd', 'ntlAthlete', 'diplomat', 'soloParent', 'medalOfValor', 'commodity'];
     if (!specialTypes.includes(this.txnDiscType) || this.defaultVatType !== 'vatable') return this.txnDiscRate;
     const defaultRate = this._opts.specialDiscountRates[this.txnDiscType] ?? 0.2;
@@ -471,7 +507,7 @@ class TransactionItem {
   }
 
   get txnDiscount(): number {
-    if (this.txnDiscType === 'regular' || this.txnDiscType === 'promotional') {
+    if (this.__txnDiscGrossBased) {
       if (this.txnDiscRate >= 1) return TransactionItem.round(this.$baseSales);
       return TransactionItem.round(this.$baseSales * this.txnDiscRate);
     }
@@ -482,8 +518,8 @@ class TransactionItem {
     if (this._parts) return this._parts.discount;
     const total = this.itmDiscount + this.txnDiscount;
     const hasRegular =
-      ((this.itmDiscType === 'regular' || this.itmDiscType === 'promotional') && this.itmDiscRate > 0) ||
-      ((this.txnDiscType === 'regular' || this.txnDiscType === 'promotional') && this.txnDiscRate > 0);
+      (this.__itmDiscGrossBased && this.itmDiscRate > 0) ||
+      (this.__txnDiscGrossBased && this.txnDiscRate > 0);
     if (this.defaultVatType === 'vatable' && hasRegular && (this.itmDiscRate >= 1 || this.txnDiscRate >= 1)) {
       return TransactionItem.round(Math.min(total, this.$baseSales));
     }
@@ -520,8 +556,8 @@ class TransactionItem {
     if (this._parts) return this._parts.vat;
     if (this.vatType !== 'vatable') return 0;
     const hasRegular =
-      ((this.itmDiscType === 'regular' || this.itmDiscType === 'promotional') && this.itmDiscRate > 0) ||
-      ((this.txnDiscType === 'regular' || this.txnDiscType === 'promotional') && this.txnDiscRate > 0);
+      (this.__itmDiscGrossBased && this.itmDiscRate > 0) ||
+      (this.__txnDiscGrossBased && this.txnDiscRate > 0);
     const vatableDiscounts = ['ntlAthlete'];
     if (vatableDiscounts.includes(this.itmDiscType) || vatableDiscounts.includes(this.txnDiscType)) {
       return TransactionItem.round(this.$grossSales * this.vatRate);
